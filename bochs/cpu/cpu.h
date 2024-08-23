@@ -22,7 +22,13 @@
 #ifndef BX_CPU_H
 #define BX_CPU_H
 
+#ifdef WASI
+extern "C" {
+#include "jmp.h"
+}
+#else
 #include <setjmp.h>
+#endif
 
 #include "bx_debug/debug.h"
 
@@ -4349,7 +4355,7 @@ public: // for now...
   BX_SMF void atexit(void);
 
   // now for some ancillary functions...
-  BX_SMF void cpu_loop(void);
+  BX_SMF int cpu_loop(void);
 #if BX_SUPPORT_SMP
   BX_SMF void cpu_run_trace(void);
 #endif

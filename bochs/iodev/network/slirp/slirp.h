@@ -325,7 +325,7 @@ void if_start(struct ttys *);
 
 void slirp_warning(Slirp *, const char *);
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(WASI)
 #include <netdb.h>
 #endif
 

@@ -24750,6 +24750,9 @@ if test "$networking" = yes; then
       can_compile_slirp=1
       DEVICE_LINK_OPTS="$DEVICE_LINK_OPTS iphlpapi.lib"
       ;;
+    wasm32-*)
+      # network unavailable on wasm
+      ;;
     *)
       ac_fn_c_check_header_compile "$LINENO" "netinet/in.h" "ac_cv_header_netinet_in_h" "$ac_includes_default"
 if test "x$ac_cv_header_netinet_in_h" = xyes
@@ -24781,6 +24784,9 @@ then :
 
 fi
 
+# network unavailable on wasm
+if test "$target" != "wasm32-unknown-wasi" && test "$target" != "wasm32-unknown-emscripten"
+then :
     ac_fn_c_check_header_compile "$LINENO" "netpacket/packet.h" "ac_cv_header_netpacket_packet_h" "$ac_includes_default"
 if test "x$ac_cv_header_netpacket_packet_h" = xyes
 then :
@@ -24790,6 +24796,7 @@ then :
         printf "%s\n" "#define BX_NETMOD_LINUX 1" >>confdefs.h
 
 
+fi
 fi
 
   fi
@@ -26518,6 +26525,10 @@ case $target in
     CI_SUPPORT_OBJS="\$(CI_OBJS_WIN32_SUPPORT)"
     EXPORT_DYNAMIC=""
     ;;
+  wasm32-*)
+    # do not export symbols unknown by runtimes
+    EXPORT_DYNAMIC=""
+    ;;
 esac
 
 
@@ -27306,6 +27317,9 @@ fi
 case "$target" in
   *-pc-windows* | *-pc-winnt* | *-cygwin* | *-mingw32* | *-msys)
     # pthread not needed for win32 platform
+    ;;
+  wasm32-*)
+    # pthread not needed for wasm
     ;;
   *)
     # assuming that some GUIs and the sound subsystem require pthreads

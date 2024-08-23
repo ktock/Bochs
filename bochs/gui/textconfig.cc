@@ -459,13 +459,19 @@ int bx_text_config_interface(int menu)
 {
   Bit32u choice;
   char sr_path[CI_PATH_LENGTH];
+  int r;
   while (1) {
     switch (menu) {
       case BX_CI_START_SIMULATION:
-        SIM->begin_simulation(bx_startup_flags.argc, bx_startup_flags.argv);
-        // we don't expect it to return, but if it does, quit
-        SIM->quit_sim(1);
-        break;
+        {
+          r = SIM->begin_simulation(bx_startup_flags.argc, bx_startup_flags.argv);
+          if (r == CI_INIT_DONE) {
+            return CI_INIT_DONE;
+          }
+          // we don't expect it to return, but if it does, quit
+          SIM->quit_sim(1);
+          break;
+        }
       case BX_CI_START_MENU:
         {
           Bit32u n_choices = 7;
@@ -1109,7 +1115,7 @@ static int text_ci_callback(void *userdata, ci_command_t command)
   {
     case CI_START:
       if (SIM->get_param_enum(BXPN_BOCHS_START)->get() == BX_QUICK_START)
-        bx_text_config_interface(BX_CI_START_SIMULATION);
+        return bx_text_config_interface(BX_CI_START_SIMULATION);
       else {
         if (!SIM->test_for_text_console())
           return CI_ERR_NO_TEXT_CONSOLE;

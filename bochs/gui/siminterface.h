@@ -557,12 +557,19 @@ BOCHSAPI extern const char *bochs_bootdisk_names[];
 // I'm not longer sure that having a base class is going to be of any
 // use... -Bryce
 
+#ifdef WASI
+extern "C" {
+#include "jmp.h"
+}
+#else
 #include <setjmp.h>
+#endif
 
 enum ci_command_t { CI_START, CI_RUNTIME_CONFIG, CI_SHUTDOWN };
 enum ci_return_t {
   CI_OK,                  // normal return value
-  CI_ERR_NO_TEXT_CONSOLE  // err: can't work because there's no text console
+  CI_ERR_NO_TEXT_CONSOLE,  // err: can't work because there's no text console
+  CI_INIT_DONE
 };
 typedef int (*config_interface_callback_t)(void *userdata, ci_command_t command);
 typedef BxEvent* (*bxevent_handler)(void *theclass, BxEvent *event);

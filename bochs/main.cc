@@ -34,6 +34,21 @@
 #include "iodev/usb/usb_common.h"
 #endif
 
+#if defined(EMSCRIPTEN) || defined(WASI)
+#include "wasm.h"
+#endif
+
+#ifdef WASI
+#include <wizer.h>
+#include <wasi/libc-environ.h>
+extern "C" {
+#include "jmp.h"
+}
+#else
+#include <setjmp.h>
+#endif
+#include <getopt.h>
+
 #ifdef HAVE_LOCALE_H
 #include <locale.h>
 #endif
@@ -303,18 +318,347 @@ void print_statistics_tree(bx_param_c *node, int level)
 }
 #endif
 
+bool vm_init_done = false;
+
+int write_entrypoint(FSVirtFile *f, int pos1, const char *entrypoint)
+{
+  int p, pos = pos1;
+
+  p = write_info(f, pos, 3, "e: ");
+  if (p < 0) {
+    return -1;
+  }
+  pos += p;
+  for (int j = 0; j < strlen(entrypoint); j++) {
+    if (entrypoint[j] == '\n') {
+      p = write_info(f, pos, 2, "\\\n");
+      if (p != 2) {
+        return -1;
+      }
+      pos += p;
+      continue;
+    }
+    if (putchar_info(f, pos++, entrypoint[j]) != 1) {
+      return -1;
+    }
+  }
+  if (putchar_info(f, pos++, '\n') != 1) {
+    return -1;
+  }
+  return pos - pos1;
+}
+
+int write_args(FSVirtFile *f, int argc, char **argv, int optind, int pos1)
+{
+  int p, pos = pos1;
+
+  p = write_info(f, pos, 3, "c: ");
+  if (p < 0) {
+    return -1;
+  }
+  pos += p;
+  bool written = false;
+  for (int i = optind; i < argc; i++) {
+    for (int j = 0; j < strlen(argv[i]); j++) {
+      if ((argv[i][j] == ' ') || (argv[i][j] == '\n')) {
+        if (putchar_info(f, pos++, '\\') != 1) {
+          return -1;
+        }
+      }
+      if (putchar_info(f, pos++, argv[i][j]) != 1) {
+        return -1;
+      }
+    }
+    if (putchar_info(f, pos++, ' ') != 1) {
+      return -1;
+    }
+    written = true;
+  }
+  if (written) {
+    // remove the last space and use newline instead
+    if (putchar_info(f, pos-1, '\n') != 1) {
+      return -1;
+    }
+  }
+  return pos - pos1;
+}
+
+int write_env(FSVirtFile *f, int pos1, const char *env)
+{
+  int p, pos = pos1;
+
+  p = write_info(f, pos, 5, "env: ");
+  if (p < 0) {
+    return -1;
+  }
+  pos += p;
+  for (int j = 0; j < strlen(env); j++) {
+    if (env[j] == '\n') {
+      p = write_info(f, pos, 2, "\\\n");
+      if (p != 2) {
+        return -1;
+      }
+      pos += p;
+      continue;
+    }
+    if (putchar_info(f, pos++, env[j]) != 1) {
+      return -1;
+    }
+  }
+  if (putchar_info(f, pos++, '\n') != 1) {
+    return -1;
+  }
+  return pos - pos1;
+}
+
+int write_net(FSVirtFile *f, int pos1, const char *mac)
+{
+  int p, pos = pos1;
+
+  p = write_info(f, pos, 3, "n: ");
+  if (p < 0) {
+    return -1;
+  }
+  pos += p;
+  for (int j = 0; j < strlen(mac); j++) {
+    if (putchar_info(f, pos++, mac[j]) != 1) {
+      return -1;
+    }
+  }
+  if (putchar_info(f, pos++, '\n') != 1) {
+    return -1;
+  }
+  return pos - pos1;
+}
+
+int write_bundle(FSVirtFile *f, int pos1, const char *bundle)
+{
+  int p, pos = pos1;
+
+  p = write_info(f, pos, 3, "b: ");
+  if (p < 0) {
+    return -1;
+  }
+  pos += p;
+  for (int j = 0; j < strlen(bundle); j++) {
+    if (putchar_info(f, pos++, bundle[j]) != 1) {
+      return -1;
+    }
+  }
+  if (putchar_info(f, pos++, '\n') != 1) {
+    return -1;
+  }
+  return pos - pos1;
+}
+
+int write_time(FSVirtFile *f, int pos1, const char *timestr)
+{
+  int p, pos = pos1;
+
+  p = write_info(f, pos, 3, "t: ");
+  if (p < 0) {
+    return -1;
+  }
+  pos += p;
+  for (int j = 0; j < strlen(timestr); j++) {
+    if (putchar_info(f, pos++, timestr[j]) != 1) {
+      return -1;
+    }
+  }
+  if (putchar_info(f, pos++, '\n') != 1) {
+    return -1;
+  }
+  return pos - pos1;
+}
+
+static struct option options[] = {
+    { "help", no_argument, NULL, 'h' },
+    { "no-stdin", no_argument },
+    { "entrypoint", required_argument },
+    { "net", required_argument },
+    { "mac", required_argument },
+    { "external-bundle", required_argument },
+    { NULL },
+};
+
+void print_usage(void)
+{
+   printf("USAGE: command [options] [COMMAND] [ARG...] \n"
+          "  [COMMAND] [ARG...]: command to run in the container. (default: commands specified in the image config)\n"
+          "\n"
+          "OPTIONS:\n"
+          "  -entrypoint <command>     : entrypoint command. (default: entrypoint specified in the image config)\n"
+          "  -no-stdin                 : disable stdin. (default: false)\n"
+          "  -net <mode>               : enable networking with the specified mode (default: disabled. supported mode: \"socket\")\n"
+          "  -mac <mac address>        : use a custom mac address for the VM\n"
+          "  -external-bundle <address>: externally mount container bundle\n"
+          "\n"
+          "This tool is based on Bochs emulator.\n"
+          );
+   exit(0);
+}
+
+int CDECL init_func(void);
+
+int init_vm(int argc, char **argv, FSVirtFile *info)
+{
+    info->contents = (char *)calloc(1024, sizeof(char));
+    info->len = 0;
+    info->lim = 1024;
+
+    /* const char *cmdline, *build_preload_file; */
+    char *entrypoint = NULL, *net = NULL, *mac = NULL, *bundle = NULL;
+    bool enable_stdin = true;
+    int pos, c, option_index, i;
+    for(;;) {
+        c = getopt_long_only(argc, argv, "+h", options, &option_index);
+        if (c == -1)
+            break;
+        switch(c) {
+        case 0:
+            switch(option_index) {
+            case 0: /* help */
+                print_usage();
+                break;
+            case 1: /* no-stdin */
+                enable_stdin = false;
+                break;
+            case 2: /* entrypoint */
+                entrypoint = optarg;
+                break;
+            case 3: /* net */
+                net = optarg;
+                break;
+            case 4: /* mac */
+                mac = optarg;
+                break;
+            case 5: /* external-bundle */
+                bundle = optarg;
+                break;
+            default:
+                fprintf(stderr, "unknown option index: %d\n", option_index);
+                exit(1);
+            }
+            break;
+        case 'h':
+            print_usage();
+            break;
+        default:
+            exit(1);
+        }
+    }
+
+    if (!vm_init_done) {
+      int ret = init_func();
+      if (ret != CI_INIT_DONE) {
+        printf("initialization failed\n");
+        return -1;
+      }
+    }
+
+    if (!enable_stdin) {
+      SIM->get_param_bool(BXPN_WASM_NOSTDIN)->set(1);
+    }
+    
+    pos = info->len;
+    if (entrypoint) {
+      int p = write_entrypoint(info, pos, entrypoint);
+      if (p < 0) {
+        printf("failed to prepare entrypoint info\n");
+        exit(1);
+      }
+      pos += p;
+    }
+
+    if (optind < argc) {
+      int p = write_args(info, argc, argv, optind, pos);
+      if (p < 0) {
+        printf("failed to prepare entrypoint info\n");
+        exit(1);
+      }
+      pos += p;
+    }
+
+#ifdef WASI
+    // TODO: support emscripten; it seems some default variables are passed, which shouldn't be inherited by the container.
+    // https://github.com/emscripten-core/emscripten/blob/0566a76b500bd2bbd535e108f657fce1db7f6f75/src/library_wasi.js#L62
+    for (char **env = environ; *env; ++env) {
+      int p = write_env(info, pos, *env);
+      if (p < 0) {
+        printf("failed to prepare env info\n");
+        exit(1);
+      }
+      pos += p;
+    }
+#endif
+
+    if (net != NULL) {
+      if (!strncmp(net, "socket", 6)) {
+        if (start_socket_net(net) != 0) {
+          fprintf(stderr, "failed to wait socket net");
+          exit(1);
+        }
+      }
+      int p = write_net(info, pos, mac);
+      if (p < 0) {
+        printf("failed to prepare net info\n");
+        exit(1);
+      }
+      pos += p;
+    }
+
+    if (bundle != NULL) {
+      int p = write_bundle(info, pos, bundle);
+      if (p < 0) {
+        printf("failed to prepare net info\n");
+        exit(1);
+      }
+      pos += p;
+    }
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", (unsigned)time(NULL));
+    int ps = write_time(info, pos, buf);
+    if (ps < 0) {
+      printf("failed to prepare time info\n");
+      exit(1);
+    }
+    pos += ps;
+
+    info->len = pos;
+#ifdef WASI
+    info->len += write_preopen_info(info, pos);
+#endif
+
+    return 0;
+}
+
 int bxmain(void)
 {
+  if (vm_init_done) {
+    bx_param_enum_c *ci_param = SIM->get_param_enum(BXPN_SEL_CONFIG_INTERFACE);
+    const char *ci_name = ci_param->get_selected();
+    int status = SIM->configuration_interface(ci_name, CI_START);
+    if (status == CI_ERR_NO_TEXT_CONSOLE) {
+      BX_PANIC(("Bochs needed the text console, but it was not usable"));
+    }
+    SIM->set_quit_context(NULL);
+    plugin_cleanup();
+    BX_INSTR_EXIT_ENV();
+    return SIM->get_exit_code();
+  }
 #ifdef HAVE_LOCALE_H
   // Initialize locale (for isprint() and other functions)
   setlocale (LC_ALL, "");
 #endif
   bx_init_siminterface();   // create the SIM object
   static jmp_buf context;
-  if (setjmp (context) == 0) {
+  // if (setjmp (context) == 0) {
+  if (1) {
     SIM->set_quit_context (&context);
     BX_INSTR_INIT_ENV();
-    if (bx_init_main(bx_startup_flags.argc, bx_startup_flags.argv) < 0) {
+    // if (bx_init_main(bx_startup_flags.argc, bx_startup_flags.argv) < 0) {
+    if (bx_init_main(0, NULL) < 0) {
       BX_INSTR_EXIT_ENV();
       return 0;
     }
@@ -333,8 +677,11 @@ int bxmain(void)
     }
     ci_param->set_enabled(0);
     int status = SIM->configuration_interface(ci_name, CI_START);
-    if (status == CI_ERR_NO_TEXT_CONSOLE)
+    if (status == CI_INIT_DONE) {
+      return CI_INIT_DONE;
+    } else if (status == CI_ERR_NO_TEXT_CONSOLE) {
       BX_PANIC(("Bochs needed the text console, but it was not usable"));
+    }
     // user quit the config interface, so just quit
   } else {
     // quit via longjmp
@@ -519,72 +866,66 @@ int WINAPI WinMain(
 #endif
 
 #if !defined(__WXMSW__)
-// normal main function, presently in for all cases except for
-// wxWidgets under win32.
-int CDECL main(int argc, char *argv[])
-{
-  bx_startup_flags.argc = argc;
-  bx_startup_flags.argv = argv;
-#ifdef WIN32
-  int arg = 1;
-  bool bx_noconsole = 0;
-  while (arg < argc) {
-    if (!strcmp("-noconsole", argv[arg])) {
-      bx_noconsole = 1;
-      break;
-    }
-    arg++;
-  }
+#ifdef WASI
+extern "C" {
+extern void __wasi_vfs_rt_init(void);
+}
 
-  if (bx_noconsole) {
-    FreeConsole();
-  } else {
-#if BX_WITH_SDL || BX_WITH_SDL2
-    // if SDL/win32, try to create a console window.
-    if (!RedirectIOToConsole()) {
-      return 1;
+int wasm_start(int (main)()) {
+  int result;
+  void *asyncify_buf;
+  while (1) {
+    result = main();
+    asyncify_stop_unwind();
+    if ((asyncify_buf = handle_jmp()) != NULL) {
+      asyncify_start_rewind(asyncify_buf);
+      continue;
     }
-#endif
-    SetConsoleTitle("Bochs for Windows - Console");
+    break;
   }
-#endif
+  return result;
+}
+// TODO: deduplicate
+int CDECL init_func(void)
+{
+  return wasm_start(bxmain);
+}
+int start_vm(void)
+{
+  return wasm_start(bxmain);
+}
+WIZER_INIT(init_func);
+#else
+// TODO: deduplicate
+int CDECL init_func(void)
+{
+  return bxmain();
+}
+int CDECL start_vm(void)
+{
   return bxmain();
 }
 #endif
 
-void print_usage(void)
+// normal main function, presently in for all cases except for
+// wxWidgets under win32.
+int CDECL main(int argc, char *argv[])
 {
-  fprintf(stderr,
-    "Usage: bochs [flags] [bochsrc options]\n\n"
-    "  -n               no configuration file\n"
-    "  -f configfile    specify configuration file\n"
-    "  -q               quick start (skip configuration interface)\n"
-    "  -benchmark N     run Bochs in benchmark mode for N millions of emulated ticks\n"
-#if BX_ENABLE_STATISTICS
-    "  -dumpstats N     dump Bochs stats every N millions of emulated ticks\n"
+#ifdef WASI
+  __wasilibc_ensure_environ();
+  __wasi_vfs_rt_init();
+  if (populate_preopens() != 0) { // register wasi-vfs dir to wasi-libc and our list
+    fprintf(stderr, "failed to populate preopens");
+    return -1;
+  }
 #endif
-    "  -r path          restore the Bochs state from path\n"
-    "  -log filename    specify Bochs log file name\n"
-    "  -unlock          unlock Bochs images leftover from previous session\n"
-#if BX_DEBUGGER
-    "  -rc filename     execute debugger commands stored in file\n"
-    "  -dbglog filename specify Bochs internal debugger log file name\n"
-#endif
-#ifdef WIN32
-    "  -noconsole       disable console window\n"
-#endif
-    "  --help           display this help and exit\n"
-    "  --help features  display available features / devices and exit\n"
-#if BX_CPU_LEVEL > 4
-    "  --help cpu       display supported CPU models and exit\n"
-#endif
-    "\nFor information on Bochs configuration file arguments, see the\n"
-#if (!defined(WIN32)) && !BX_WITH_MACOS
-    "bochsrc section in the user documentation or the man page of bochsrc.\n");
-#else
-    "bochsrc section in the user documentation.\n");
-#endif
+  if (init_vm(argc, argv, get_vm_info()) < 0) {
+    fprintf(stderr, "failed to init vm");
+    return -1;
+  }
+  return start_vm();
 }
+#endif
 
 int bx_init_main(int argc, char *argv[])
 {
@@ -619,172 +960,180 @@ int bx_init_main(int argc, char *argv[])
 
   bx_init_options();
 
-  bx_print_header();
+  // bx_print_header();
 
   SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_RUN_START);
 
+#if defined(EMSCRIPTEN) || defined(WASI)
+  SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
+  bochsrc_filename = "/pack/bochsrc";
+#endif
+
+  int arg = 0;
+  int load_rcfile=1;
+
   // interpret the args that start with -, like -q, -f, etc.
-  int arg = 1, load_rcfile=1;
-  while (arg < argc) {
-    // parse next arg
-    if (!strcmp("--help", argv[arg]) || !strncmp("-h", argv[arg], 2)
-#if defined(WIN32)
-        || !strncmp("/?", argv[arg], 2)
-#endif
-       ) {
-      if ((arg+1) < argc) {
-        if (!strcmp("features", argv[arg+1])) {
-          fprintf(stderr, "Supported features:\n\n");
-#if BX_SUPPORT_CLGD54XX
-          fprintf(stderr, "cirrus\n");
-#endif
-#if BX_SUPPORT_VOODOO
-          fprintf(stderr, "voodoo\n");
-#endif
-#if BX_SUPPORT_PCI
-          fprintf(stderr, "pci\n");
-#endif
-#if BX_SUPPORT_PCIDEV
-          fprintf(stderr, "pcidev\n");
-#endif
-#if BX_SUPPORT_NE2K
-          fprintf(stderr, "ne2k\n");
-#endif
-#if BX_SUPPORT_PCIPNIC
-          fprintf(stderr, "pcipnic\n");
-#endif
-#if BX_SUPPORT_E1000
-          fprintf(stderr, "e1000\n");
-#endif
-#if BX_SUPPORT_SB16
-          fprintf(stderr, "sb16\n");
-#endif
-#if BX_SUPPORT_ES1370
-          fprintf(stderr, "es1370\n");
-#endif
-#if BX_SUPPORT_USB_OHCI
-          fprintf(stderr, "usb_ohci\n");
-#endif
-#if BX_SUPPORT_USB_UHCI
-          fprintf(stderr, "usb_uhci\n");
-#endif
-#if BX_SUPPORT_USB_EHCI
-          fprintf(stderr, "usb_ehci\n");
-#endif
-#if BX_SUPPORT_USB_XHCI
-          fprintf(stderr, "usb_xhci\n");
-#endif
-#if BX_GDBSTUB
-          fprintf(stderr, "gdbstub\n");
-#endif
-          fprintf(stderr, "\n");
-          arg++;
-        }
-#if BX_CPU_LEVEL > 4
-        else if (!strcmp("cpu", argv[arg+1])) {
-          int i = 0;
-          fprintf(stderr, "Supported CPU models:\n\n");
-          do {
-            fprintf(stderr, "%s\n", SIM->get_param_enum(BXPN_CPU_MODEL)->get_choice(i));
-          } while (i++ < SIM->get_param_enum(BXPN_CPU_MODEL)->get_max());
-          fprintf(stderr, "\n");
-          arg++;
-        }
-#endif
-      } else {
-        print_usage();
-      }
-      SIM->quit_sim(0);
-    }
-    else if (!strcmp("-n", argv[arg])) {
-      load_rcfile = 0;
-    }
-    else if (!strcmp("-q", argv[arg])) {
-      SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
-    }
-    else if (!strcmp("-log", argv[arg])) {
-      if (++arg >= argc) BX_PANIC(("-log must be followed by a filename"));
-      else SIM->get_param_string(BXPN_LOG_FILENAME)->set(argv[arg]);
-    }
-    else if (!strcmp("-unlock", argv[arg])) {
-      SIM->get_param_bool(BXPN_UNLOCK_IMAGES)->set(1);
-    }
-#if BX_DEBUGGER
-    else if (!strcmp("-dbglog", argv[arg])) {
-      if (++arg >= argc) BX_PANIC(("-dbglog must be followed by a filename"));
-      else SIM->get_param_string(BXPN_DEBUGGER_LOG_FILENAME)->set(argv[arg]);
-    }
-#endif
-    else if (!strcmp("-f", argv[arg])) {
-      if (++arg >= argc) BX_PANIC(("-f must be followed by a filename"));
-      else bochsrc_filename = argv[arg];
-    }
-    else if (!strcmp("-qf", argv[arg])) {
-      SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
-      if (++arg >= argc) BX_PANIC(("-qf must be followed by a filename"));
-      else bochsrc_filename = argv[arg];
-    }
-    else if (!strcmp("-benchmark", argv[arg])) {
-      SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
-      if (++arg >= argc) BX_PANIC(("-benchmark must be followed by a number"));
-      else SIM->get_param_num(BXPN_BOCHS_BENCHMARK)->set(atoi(argv[arg]));
-    }
-#if BX_ENABLE_STATISTICS
-    else if (!strcmp("-dumpstats", argv[arg])) {
-      if (++arg >= argc) BX_PANIC(("-dumpstats must be followed by a number"));
-      else SIM->get_param_num(BXPN_DUMP_STATS)->set(atoi(argv[arg]));
-    }
-#endif
-    else if (!strcmp("-r", argv[arg])) {
-      if (++arg >= argc) BX_PANIC(("-r must be followed by a path"));
-      else {
-        SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
-        SIM->get_param_bool(BXPN_RESTORE_FLAG)->set(1);
-        SIM->get_param_string(BXPN_RESTORE_PATH)->set(argv[arg]);
-      }
-    }
-#ifdef WIN32
-    else if (!strcmp("-noconsole", argv[arg])) {
-      // already handled in main() / WinMain()
-    }
-#endif
-#if BX_WITH_CARBON
-    else if (!strncmp("-psn", argv[arg], 4)) {
-      // "-psn" is passed if we are launched by double-clicking
-      // ugly hack.  I don't know how to open a window to print messages in,
-      // so put them in /tmp/early-bochs-out.txt.  Sorry. -bbd
-      io->init_log("/tmp/early-bochs-out.txt");
-      BX_INFO(("I was launched by double clicking.  Fixing home directory."));
-      arg = argc; // ignore all other args.
-      setupWorkingDirectory (argv[0]);
-      // there is no stdin/stdout so disable the text-based config interface.
-      SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
-      char cwd[MAXPATHLEN];
-      getwd (cwd);
-      BX_INFO(("Now my working directory is %s", cwd));
-      // if it was started from command line, there could be some args still.
-      for (int a=0; a<argc; a++) {
-        BX_INFO(("argument %d is %s", a, argv[a]));
-      }
-    }
-#endif
-#if BX_DEBUGGER
-    else if (!strcmp("-rc", argv[arg])) {
-      // process "-rc filename" option, if it exists
-      if (++arg >= argc) BX_PANIC(("-rc must be followed by a filename"));
-      else bx_dbg_set_rcfile(argv[arg]);
-    }
-#endif
-    else if (argv[arg][0] == '-') {
-      print_usage();
-      BX_PANIC(("command line arg '%s' was not understood", argv[arg]));
-    }
-    else {
-      // the arg did not start with -, so stop interpreting flags
-      break;
-    }
-    arg++;
-  }
+//   int arg = 1, load_rcfile=1;
+//   while (arg < argc) {
+//     // parse next arg
+//     if (!strcmp("--help", argv[arg]) || !strncmp("-h", argv[arg], 2)
+// #if defined(WIN32)
+//         || !strncmp("/?", argv[arg], 2)
+// #endif
+//        ) {
+//       if ((arg+1) < argc) {
+//         if (!strcmp("features", argv[arg+1])) {
+//           fprintf(stderr, "Supported features:\n\n");
+// #if BX_SUPPORT_CLGD54XX
+//           fprintf(stderr, "cirrus\n");
+// #endif
+// #if BX_SUPPORT_VOODOO
+//           fprintf(stderr, "voodoo\n");
+// #endif
+// #if BX_SUPPORT_PCI
+//           fprintf(stderr, "pci\n");
+// #endif
+// #if BX_SUPPORT_PCIDEV
+//           fprintf(stderr, "pcidev\n");
+// #endif
+// #if BX_SUPPORT_NE2K
+//           fprintf(stderr, "ne2k\n");
+// #endif
+// #if BX_SUPPORT_PCIPNIC
+//           fprintf(stderr, "pcipnic\n");
+// #endif
+// #if BX_SUPPORT_E1000
+//           fprintf(stderr, "e1000\n");
+// #endif
+// #if BX_SUPPORT_SB16
+//           fprintf(stderr, "sb16\n");
+// #endif
+// #if BX_SUPPORT_ES1370
+//           fprintf(stderr, "es1370\n");
+// #endif
+// #if BX_SUPPORT_USB_OHCI
+//           fprintf(stderr, "usb_ohci\n");
+// #endif
+// #if BX_SUPPORT_USB_UHCI
+//           fprintf(stderr, "usb_uhci\n");
+// #endif
+// #if BX_SUPPORT_USB_EHCI
+//           fprintf(stderr, "usb_ehci\n");
+// #endif
+// #if BX_SUPPORT_USB_XHCI
+//           fprintf(stderr, "usb_xhci\n");
+// #endif
+// #if BX_GDBSTUB
+//           fprintf(stderr, "gdbstub\n");
+// #endif
+//           fprintf(stderr, "\n");
+//           arg++;
+//         }
+// #if BX_CPU_LEVEL > 4
+//         else if (!strcmp("cpu", argv[arg+1])) {
+//           int i = 0;
+//           fprintf(stderr, "Supported CPU models:\n\n");
+//           do {
+//             fprintf(stderr, "%s\n", SIM->get_param_enum(BXPN_CPU_MODEL)->get_choice(i));
+//           } while (i++ < SIM->get_param_enum(BXPN_CPU_MODEL)->get_max());
+//           fprintf(stderr, "\n");
+//           arg++;
+//         }
+// #endif
+//       } else {
+//         print_usage();
+//       }
+//       SIM->quit_sim(0);
+//     }
+//     else if (!strcmp("-n", argv[arg])) {
+//       load_rcfile = 0;
+//     }
+//     else if (!strcmp("-q", argv[arg])) {
+//       SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
+//     }
+//     else if (!strcmp("-log", argv[arg])) {
+//       if (++arg >= argc) BX_PANIC(("-log must be followed by a filename"));
+//       else SIM->get_param_string(BXPN_LOG_FILENAME)->set(argv[arg]);
+//     }
+//     else if (!strcmp("-unlock", argv[arg])) {
+//       SIM->get_param_bool(BXPN_UNLOCK_IMAGES)->set(1);
+//     }
+// #if BX_DEBUGGER
+//     else if (!strcmp("-dbglog", argv[arg])) {
+//       if (++arg >= argc) BX_PANIC(("-dbglog must be followed by a filename"));
+//       else SIM->get_param_string(BXPN_DEBUGGER_LOG_FILENAME)->set(argv[arg]);
+//     }
+// #endif
+//     else if (!strcmp("-f", argv[arg])) {
+//       if (++arg >= argc) BX_PANIC(("-f must be followed by a filename"));
+//       else bochsrc_filename = argv[arg];
+//     }
+//     else if (!strcmp("-qf", argv[arg])) {
+//       SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
+//       if (++arg >= argc) BX_PANIC(("-qf must be followed by a filename"));
+//       else bochsrc_filename = argv[arg];
+//     }
+//     else if (!strcmp("-benchmark", argv[arg])) {
+//       SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
+//       if (++arg >= argc) BX_PANIC(("-benchmark must be followed by a number"));
+//       else SIM->get_param_num(BXPN_BOCHS_BENCHMARK)->set(atoi(argv[arg]));
+//     }
+// #if BX_ENABLE_STATISTICS
+//     else if (!strcmp("-dumpstats", argv[arg])) {
+//       if (++arg >= argc) BX_PANIC(("-dumpstats must be followed by a number"));
+//       else SIM->get_param_num(BXPN_DUMP_STATS)->set(atoi(argv[arg]));
+//     }
+// #endif
+//     else if (!strcmp("-r", argv[arg])) {
+//       if (++arg >= argc) BX_PANIC(("-r must be followed by a path"));
+//       else {
+//         SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
+//         SIM->get_param_bool(BXPN_RESTORE_FLAG)->set(1);
+//         SIM->get_param_string(BXPN_RESTORE_PATH)->set(argv[arg]);
+//       }
+//     }
+// #ifdef WIN32
+//     else if (!strcmp("-noconsole", argv[arg])) {
+//       // already handled in main() / WinMain()
+//     }
+// #endif
+// #if BX_WITH_CARBON
+//     else if (!strncmp("-psn", argv[arg], 4)) {
+//       // "-psn" is passed if we are launched by double-clicking
+//       // ugly hack.  I don't know how to open a window to print messages in,
+//       // so put them in /tmp/early-bochs-out.txt.  Sorry. -bbd
+//       io->init_log("/tmp/early-bochs-out.txt");
+//       BX_INFO(("I was launched by double clicking.  Fixing home directory."));
+//       arg = argc; // ignore all other args.
+//       setupWorkingDirectory (argv[0]);
+//       // there is no stdin/stdout so disable the text-based config interface.
+//       SIM->get_param_enum(BXPN_BOCHS_START)->set(BX_QUICK_START);
+//       char cwd[MAXPATHLEN];
+//       getwd (cwd);
+//       BX_INFO(("Now my working directory is %s", cwd));
+//       // if it was started from command line, there could be some args still.
+//       for (int a=0; a<argc; a++) {
+//         BX_INFO(("argument %d is %s", a, argv[a]));
+//       }
+//     }
+// #endif
+// #if BX_DEBUGGER
+//     else if (!strcmp("-rc", argv[arg])) {
+//       // process "-rc filename" option, if it exists
+//       if (++arg >= argc) BX_PANIC(("-rc must be followed by a filename"));
+//       else bx_dbg_set_rcfile(argv[arg]);
+//     }
+// #endif
+//     else if (argv[arg][0] == '-') {
+//       print_usage();
+//       BX_PANIC(("command line arg '%s' was not understood", argv[arg]));
+//     }
+//     else {
+//       // the arg did not start with -, so stop interpreting flags
+//       break;
+//     }
+//     arg++;
+//   }
 #if BX_WITH_CARBON
   if(!getenv("BXSHARE"))
   {
@@ -971,8 +1320,29 @@ bool load_and_init_display_lib(void)
   return (bx_gui != NULL);
 }
 
+int start_loop(void)
+{
+  int r = 0;
+  while (1) {
+    r = BX_CPU(0)->cpu_loop();
+    if (r == CI_INIT_DONE) {
+      vm_init_done = true;
+      return CI_INIT_DONE;
+    }
+    if (bx_pc_system.kill_bochs_request)
+      break;
+  }
+  return 0;
+}
+
 int bx_begin_simulation(int argc, char *argv[])
 {
+  if (vm_init_done && (BX_SMP_PROCESSORS == 1)) {
+    start_loop();
+    BX_INFO(("cpu loop quit, shutting down simulator"));
+    bx_atexit();
+    return(0);
+  }
   bx_user_quit = 0;
   if (SIM->get_param_bool(BXPN_RESTORE_FLAG)->get()) {
     if (!SIM->restore_config()) {
@@ -1046,56 +1416,55 @@ int bx_begin_simulation(int argc, char *argv[])
     if (BX_SMP_PROCESSORS == 1) {
       // only one processor, run as fast as possible by not messing with
       // quantums and loops.
-      while (1) {
-        BX_CPU(0)->cpu_loop();
-        if (bx_pc_system.kill_bochs_request)
-          break;
+
+      if (start_loop() == CI_INIT_DONE) {
+        return CI_INIT_DONE; // init done
       }
       // for one processor, the only reason for cpu_loop to return is
       // that kill_bochs_request was set by the GUI interface.
     }
 #if BX_SUPPORT_SMP
-    else {
-      // SMP simulation: do a few instructions on each processor, then switch
-      // to another.  Increasing quantum speeds up overall performance, but
-      // reduces granularity of synchronization between processors.
-      // Current implementation uses dynamic quantum, each processor will
-      // execute exactly one trace then quit the cpu_loop and switch to
-      // the next processor.
+    // else {
+    //   // SMP simulation: do a few instructions on each processor, then switch
+    //   // to another.  Increasing quantum speeds up overall performance, but
+    //   // reduces granularity of synchronization between processors.
+    //   // Current implementation uses dynamic quantum, each processor will
+    //   // execute exactly one trace then quit the cpu_loop and switch to
+    //   // the next processor.
 
-      static int quantum = SIM->get_param_num(BXPN_SMP_QUANTUM)->get();
-      Bit32u executed = 0, processor = 0;
-      bool run = true;
+    //   static int quantum = SIM->get_param_num(BXPN_SMP_QUANTUM)->get();
+    //   Bit32u executed = 0, processor = 0;
+    //   bool run = true;
 
-      if (setjmp(BX_CPU_C::jmp_buf_env)) {
-        // can get here only from exception function or VMEXIT
-        BX_CPU(processor)->icount++;
-        run = false;
-      }
-      while (1) {
-         // do some instructions in each processor
-        if (run)
-          BX_CPU(processor)->cpu_run_trace();
-        else
-          run = true;
+    //   if (setjmp(BX_CPU_C::jmp_buf_env)) {
+    //     // can get here only from exception function or VMEXIT
+    //     BX_CPU(processor)->icount++;
+    //     run = false;
+    //   }
+    //   while (1) {
+    //      // do some instructions in each processor
+    //     if (run)
+    //       BX_CPU(processor)->cpu_run_trace();
+    //     else
+    //       run = true;
 
-         // see how many instruction it was able to run
-         Bit32u n = (Bit32u)(BX_CPU(processor)->get_icount() - BX_CPU(processor)->icount_last_sync);
-         if (n == 0) n = quantum; // the CPU was halted
-         executed += n;
+    //      // see how many instruction it was able to run
+    //      Bit32u n = (Bit32u)(BX_CPU(processor)->get_icount() - BX_CPU(processor)->icount_last_sync);
+    //      if (n == 0) n = quantum; // the CPU was halted
+    //      executed += n;
 
-         if (++processor == BX_SMP_PROCESSORS) {
-           processor = 0;
-           BX_TICKN(executed / BX_SMP_PROCESSORS);
-           executed %= BX_SMP_PROCESSORS;
-         }
+    //      if (++processor == BX_SMP_PROCESSORS) {
+    //        processor = 0;
+    //        BX_TICKN(executed / BX_SMP_PROCESSORS);
+    //        executed %= BX_SMP_PROCESSORS;
+    //      }
 
-         BX_CPU(processor)->icount_last_sync = BX_CPU(processor)->get_icount();
+    //      BX_CPU(processor)->icount_last_sync = BX_CPU(processor)->get_icount();
 
-         if (bx_pc_system.kill_bochs_request)
-           break;
-      }
-    }
+    //      if (bx_pc_system.kill_bochs_request)
+    //        break;
+    //   }
+    // }
 #endif /* BX_SUPPORT_SMP */
   }
 #endif /* BX_DEBUGGER == 0 */
@@ -1405,14 +1774,14 @@ void bx_init_hardware()
   BX_DEBUG(("bx_init_hardware is setting signal handlers"));
 // if not using debugger, then we can take control of SIGINT.
 #if !BX_DEBUGGER
-  signal(SIGINT, bx_signal_handler);
+  // signal(SIGINT, bx_signal_handler);
 #endif
 
 #if BX_SHOW_IPS
 #if !defined(WIN32)
   if (!SIM->is_wx_selected()) {
-    signal(SIGALRM, bx_signal_handler);
-    alarm(1);
+    // signal(SIGALRM, bx_signal_handler);
+    // alarm(1);
   }
 #endif
 #endif
@@ -1451,14 +1820,14 @@ int bx_atexit(void)
   // restore signal handling to defaults
 #if BX_DEBUGGER == 0
   BX_INFO(("restoring default signal behavior"));
-  signal(SIGINT, SIG_DFL);
+  // signal(SIGINT, SIG_DFL);
 #endif
 
 #if BX_SHOW_IPS
 #if !defined(__MINGW32__) && !defined(_MSC_VER)
   if (!SIM->is_wx_selected()) {
-    alarm(0);
-    signal(SIGALRM, SIG_DFL);
+    // alarm(0);
+    // signal(SIGALRM, SIG_DFL);
   }
 #endif
 #endif
@@ -1519,8 +1888,8 @@ void CDECL bx_signal_handler(int signum)
     bx_show_ips_handler();
 #if !defined(WIN32)
     if (!SIM->is_wx_selected()) {
-      signal(SIGALRM, bx_signal_handler);
-      alarm(1);
+      // signal(SIGALRM, bx_signal_handler);
+      // alarm(1);
     }
 #endif
     return;

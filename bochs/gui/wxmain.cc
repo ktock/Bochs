@@ -1285,7 +1285,8 @@ void *SimThread::Entry(void)
   //   - Entry() exits and the thread stops. Whew.
   wxLogDebug(wxT("in SimThread, starting at bx_continue_after_config_interface"));
   static jmp_buf context;  // this must not go out of scope. maybe static not needed
-  if (setjmp(context) == 0) {
+  // if (setjmp(context) == 0) {
+  if (1) {
     SIM->set_quit_context(&context);
     SIM->begin_simulation(bx_startup_flags.argc, bx_startup_flags.argv);
     wxLogDebug(wxT("in SimThread, SIM->begin_simulation() exited normally"));

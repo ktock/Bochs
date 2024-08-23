@@ -26,6 +26,10 @@
 #include "pc_system.h"
 #include "slowdown_timer.h"
 
+#if defined(EMSCRIPTEN)
+#include <emscripten.h>
+#endif
+
 #include <errno.h>
 #if !defined(_MSC_VER)
 #include <unistd.h>
@@ -142,7 +146,9 @@ void bx_slowdown_timer_c::handle_timer()
    *      ^>Bochs runs at normal
    */
   if(wanttime > (totaltime+REALTIME_Q)) {
-#if BX_HAVE_USLEEP
+#if defined(EMSCRIPTEN)
+    emscripten_sleep(usectomsec((Bit32u)s.Q));
+#elif BX_HAVE_USLEEP
     usleep(s.Q);
 #elif BX_HAVE_MSLEEP
     msleep(usectomsec((Bit32u)s.Q));

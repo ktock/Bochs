@@ -467,7 +467,8 @@ void bx_real_sim_c::quit_sim(int code)
   io->exit_log();
   // use longjmp to quit cleanly, no matter where in the stack we are.
   if (quit_context != NULL) {
-    longjmp(*quit_context, 1);
+    // longjmp(*quit_context, 1);
+    exit(0);
     BX_PANIC(("in bx_real_sim_c::quit_sim, longjmp should never return"));
   } else {
     // use exit() to stop the application.
@@ -1286,7 +1287,8 @@ bool bx_real_sim_c::restore_bochs_param(bx_list_c *root, const char *sr_path, co
                     FILE **fpp = ((bx_shadow_filedata_c*)param)->get_fpp();
                     // If the temporary backing store file wasn't created, do it now.
                     if (*fpp == NULL) {
-                      *fpp = tmpfile64();
+                      BX_PANIC(("tmpfile unsupported"));
+                      // *fpp = tmpfile64();
                     } else {
                       fseeko64(*fpp, 0, SEEK_SET);
                     }

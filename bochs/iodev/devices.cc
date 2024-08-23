@@ -359,6 +359,12 @@ void bx_devices_c::init(BX_MEM_C *newmem)
   bulkIOQuantumsRequested = 0;
   bulkIOQuantumsTransferred = 0;
 
+#if defined(EMSCRIPTEN) || defined(WASI)
+  PLUG_load_plugin(mapdirVirtio9p, PLUGTYPE_STANDARD);
+  PLUG_load_plugin(packVirtio9p, PLUGTYPE_STANDARD);
+  PLUG_load_plugin(stdioVirtioConsole, PLUGTYPE_STANDARD);
+  PLUG_load_plugin(socketVirtioNet, PLUGTYPE_STANDARD);
+#endif
   bx_init_plugins();
 
   /* now perform checksum of CMOS memory */

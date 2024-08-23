@@ -252,13 +252,37 @@ bool BX_CPP_AttrRegparmN(3) cdrom_base_c::read_block(Bit8u* buf, Bit32u lba, int
   } else {
     buf1 = buf;
   }
+  bool needs_reopen = false;
   do {
+#ifdef WASI
+    if (needs_reopen) {
+      needs_reopen = false;
+      fd = open(path, O_RDONLY
+#ifdef O_BINARY
+                | O_BINARY
+#endif
+                );
+      if (fd < 0) {
+        BX_PANIC(("cdrom: read_block: re- open returned error."));
+      }
+    }
+#endif
     pos = lseek(fd, (off_t) lba * BX_CD_FRAMESIZE, SEEK_SET);
     if (pos < 0) {
+#ifdef WASI
+      needs_reopen = true;
+      continue;
+#else
       BX_PANIC(("cdrom: read_block: lseek returned error."));
-    } else {
-      n = read(fd, (char*) buf1, BX_CD_FRAMESIZE);
+#endif
     }
+    n = read(fd, (char*) buf1, BX_CD_FRAMESIZE);
+#ifdef WASI
+    if (n < 0) {
+      needs_reopen = true;
+      continue;
+    }
+#endif
   } while ((n != BX_CD_FRAMESIZE) && (--try_count > 0));
 
   return (n == BX_CD_FRAMESIZE);

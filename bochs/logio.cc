@@ -36,7 +36,7 @@ const int MAGIC_LOGNUM = 0x12345678;
 // Just for the iofunctions
 
 static int Allocio=0;
-BX_MUTEX(logio_mutex);
+// BX_MUTEX(logio_mutex);
 
 const char* iofunctions::getlevel(int i) const
 {
@@ -85,7 +85,7 @@ void iofunctions::init(void)
   // number is set.
   magic=MAGIC_LOGNUM;
 
-  BX_INIT_MUTEX(logio_mutex);
+  // BX_INIT_MUTEX(logio_mutex);
 
   // sets the default logprefix
   strcpy(logprefix,"%t%e%d");
@@ -205,7 +205,7 @@ void iofunctions::out(int level, const char *prefix, const char *fmt, va_list ap
   assert(this != NULL);
   assert(logfd != NULL);
 
-  BX_LOCK(logio_mutex);
+  // BX_LOCK(logio_mutex);
 
   switch (level) {
     case LOGLEV_INFO: c='i'; break;
@@ -251,6 +251,7 @@ void iofunctions::out(int level, const char *prefix, const char *fmt, va_list ap
     s++;
   }
 
+#if !BX_NO_LOGGING
   fprintf(logfd,"%s ", msgpfx);
 
   if(level==LOGLEV_PANIC)
@@ -262,7 +263,8 @@ void iofunctions::out(int level, const char *prefix, const char *fmt, va_list ap
   if (SIM->has_log_viewer()) {
     SIM->log_msg(msgpfx, level, msg);
   }
-  BX_UNLOCK(logio_mutex);
+#endif
+  // BX_UNLOCK(logio_mutex);
 }
 
 iofunctions::iofunctions(FILE *fs)
@@ -290,7 +292,7 @@ iofunctions::iofunctions()
 
 iofunctions::~iofunctions(void)
 {
-  BX_FINI_MUTEX(logio_mutex);
+  // BX_FINI_MUTEX(logio_mutex);
 
   // flush before erasing magic number, or flush does nothing.
   flush();
@@ -669,10 +671,10 @@ void logfunctions::fatal(int level, const char *prefix, const char *fmt, va_list
 #endif
   if (!SIM->is_wx_selected()) {
     static const char *divider = "========================================================================";
-    fprintf(stderr, "%s\n", divider);
-    fprintf(stderr, "Bochs is exiting with the following message:\n");
-    fprintf(stderr, "%s", exit_msg);
-    fprintf(stderr, "\n%s\n", divider);
+    // fprintf(stderr, "%s\n", divider);
+    // fprintf(stderr, "Bochs is exiting with the following message:\n");
+    // fprintf(stderr, "%s", exit_msg);
+    // fprintf(stderr, "\n%s\n", divider);
   }
 #if !BX_DEBUGGER
   BX_EXIT(exit_status);

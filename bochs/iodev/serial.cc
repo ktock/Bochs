@@ -36,7 +36,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h>
+// #include <netdb.h>
 #define closesocket(s)    close(s)
 typedef int SOCKET;
 #else
@@ -450,90 +450,90 @@ bx_serial_c::init(void)
         BX_SER_THIS mouse_type = SIM->get_param_enum(BXPN_MOUSE_TYPE)->get();
       } else if ((mode == BX_SER_MODE_SOCKET_CLIENT) ||
                  (mode == BX_SER_MODE_SOCKET_SERVER)) {
-        struct sockaddr_in  sin;
-        struct hostent      *hp;
-        char                host[BX_PATHNAME_LEN];
-        int                 port;
-        SOCKET              socket;
-        bool                server = (mode == BX_SER_MODE_SOCKET_SERVER);
+//         struct sockaddr_in  sin;
+//         struct hostent      *hp;
+//         char                host[BX_PATHNAME_LEN];
+//         int                 port;
+//         SOCKET              socket;
+//         bool                server = (mode == BX_SER_MODE_SOCKET_SERVER);
 
-#ifdef BX_SER_WIN32
-        if (!winsock_init) {
-          WORD wVersionRequested;
-          WSADATA wsaData;
-          int err;
-          wVersionRequested = MAKEWORD(2, 0);
-          err = WSAStartup(wVersionRequested, &wsaData);
-          if (err != 0) {
-            BX_PANIC(("WSAStartup failed"));
-            continue;
-          }
-          winsock_init = true;
-        }
-#endif
+// #ifdef BX_SER_WIN32
+//         if (!winsock_init) {
+//           WORD wVersionRequested;
+//           WSADATA wsaData;
+//           int err;
+//           wVersionRequested = MAKEWORD(2, 0);
+//           err = WSAStartup(wVersionRequested, &wsaData);
+//           if (err != 0) {
+//             BX_PANIC(("WSAStartup failed"));
+//             continue;
+//           }
+//           winsock_init = true;
+//         }
+// #endif
 
-        strcpy(host, dev);
-        char *substr = strtok(host, ":");
-        substr = strtok(NULL, ":");
-        if (!substr) {
-          BX_PANIC(("com%d: inet address is wrong (%s)", i+1, dev));
-          continue;
-        }
-        port = atoi(substr);
+//         strcpy(host, dev);
+//         char *substr = strtok(host, ":");
+//         substr = strtok(NULL, ":");
+//         if (!substr) {
+//           BX_PANIC(("com%d: inet address is wrong (%s)", i+1, dev));
+//           continue;
+//         }
+//         port = atoi(substr);
 
-        hp = gethostbyname(host);
-        if (!hp) {
-          BX_PANIC(("com%d: gethostbyname failed (%s)", i+1, host));
-          continue;
-        }
+//         hp = gethostbyname(host);
+//         if (!hp) {
+//           BX_PANIC(("com%d: gethostbyname failed (%s)", i+1, host));
+//           continue;
+//         }
 
-        memset ((char*) &sin, 0, sizeof (sin));
-#if BX_HAVE_SOCKADDR_IN_SIN_LEN
-       sin.sin_len = sizeof sin;
-#endif
-        memcpy ((char*) &(sin.sin_addr), hp->h_addr, hp->h_length);
-        sin.sin_family = hp->h_addrtype;
-        sin.sin_port = htons (port);
+//         memset ((char*) &sin, 0, sizeof (sin));
+// #if BX_HAVE_SOCKADDR_IN_SIN_LEN
+//        sin.sin_len = sizeof sin;
+// #endif
+//         memcpy ((char*) &(sin.sin_addr), hp->h_addr, hp->h_length);
+//         sin.sin_family = hp->h_addrtype;
+//         sin.sin_port = htons (port);
 
-        socket = ::socket (AF_INET, SOCK_STREAM, 0);
-        if (socket < 0) {
-          BX_PANIC(("com%d: socket() failed",i+1));
-          continue;
-        }
+//         socket = ::socket (AF_INET, SOCK_STREAM, 0);
+//         if (socket < 0) {
+//           BX_PANIC(("com%d: socket() failed",i+1));
+//           continue;
+//         }
 
-        if (server) {
-          // server mode
-          if (::bind(socket, (sockaddr *) &sin, sizeof (sin)) < 0 ||
-              ::listen(socket, SOMAXCONN) < 0) {
-            closesocket(socket);
-            socket = (SOCKET) -1;
-            BX_PANIC(("com%d: bind() or listen() failed (host:%s, port:%d)",i+1, host, port));
-            continue;
-          } else {
-            fprintf(stderr,"com%d: waiting for client to connect (host:%s, port:%d)\n",i+1, host, port);
-            SOCKET client;
-            if ((client = ::accept(socket, NULL, 0)) < 0) {
-              BX_PANIC(("com%d: accept() failed (host:%s, port:%d)",i+1, host, port));
-              continue;
-            } else {
-              fprintf(stderr,"client connected\n");
-              closesocket(socket);
-              socket = client;
-            }
-          }
-        } else if (::connect(socket, (sockaddr *) &sin, sizeof (sin)) < 0) {
-          // client mode
-          closesocket(socket);
-          socket = (SOCKET) -1;
-          BX_ERROR(("com%d: connect() failed (host:%s, port:%d)",i+1, host, port));
-        }
+//         if (server) {
+//           // server mode
+//           if (::bind(socket, (sockaddr *) &sin, sizeof (sin)) < 0 ||
+//               ::listen(socket, SOMAXCONN) < 0) {
+//             closesocket(socket);
+//             socket = (SOCKET) -1;
+//             BX_PANIC(("com%d: bind() or listen() failed (host:%s, port:%d)",i+1, host, port));
+//             continue;
+//           } else {
+//             fprintf(stderr,"com%d: waiting for client to connect (host:%s, port:%d)\n",i+1, host, port);
+//             SOCKET client;
+//             if ((client = ::accept(socket, NULL, 0)) < 0) {
+//               BX_PANIC(("com%d: accept() failed (host:%s, port:%d)",i+1, host, port));
+//               continue;
+//             } else {
+//               fprintf(stderr,"client connected\n");
+//               closesocket(socket);
+//               socket = client;
+//             }
+//           }
+//         } else if (::connect(socket, (sockaddr *) &sin, sizeof (sin)) < 0) {
+//           // client mode
+//           closesocket(socket);
+//           socket = (SOCKET) -1;
+//           BX_ERROR(("com%d: connect() failed (host:%s, port:%d)",i+1, host, port));
+//         }
 
-        BX_SER_THIS s[i].socket_id = socket;
-        if (socket > 0) {
-          BX_INFO(("com%d - inet %s - socket_id: %d, ip:%s, port:%d",
-                   i+1, server ? "server" : "client", socket, host, port));
-          BX_SER_THIS s[i].io_mode = mode;
-        }
+//         BX_SER_THIS s[i].socket_id = socket;
+//         if (socket > 0) {
+//           BX_INFO(("com%d - inet %s - socket_id: %d, ip:%s, port:%d",
+//                    i+1, server ? "server" : "client", socket, host, port));
+//           BX_SER_THIS s[i].io_mode = mode;
+//         }
       } else if ((mode == BX_SER_MODE_PIPE_CLIENT) ||
                  (mode == BX_SER_MODE_PIPE_SERVER)) {
         if (strlen(dev) > 0) {

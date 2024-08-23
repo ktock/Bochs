@@ -237,15 +237,20 @@ char *bx_strrev(char *str)
 namespace std{extern "C" {char *mktemp(char *tpl);}}
 #endif
 #if !BX_HAVE_MKSTEMP
+#include <stdlib.h>
 int bx_mkstemp(char *tpl)
 {
-  mktemp(tpl);
-  return ::open(tpl, O_RDWR | O_CREAT | O_TRUNC
-#  ifdef O_BINARY
-            | O_BINARY
-#  endif
-              , S_IWUSR | S_IRUSR | S_IRGRP | S_IWGRP);
+  return mkstemp(tpl);
 }
+// int bx_mkstemp(char *tpl)
+// {
+//   mktemp(tpl);
+//   return ::open(tpl, O_RDWR | O_CREAT | O_TRUNC
+// #  ifdef O_BINARY
+//             | O_BINARY
+// #  endif
+//               , S_IWUSR | S_IRUSR | S_IRGRP | S_IWGRP);
+// }
 #endif // !BX_HAVE_MKSTEMP
 
 //////////////////////////////////////////////////////////////////////

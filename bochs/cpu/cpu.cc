@@ -28,6 +28,9 @@
 #include "pc_system.h"
 #include "cpustats.h"
 
+#include "param_names.h"
+#include "gui/siminterface.h"
+
 #if BX_SUPPORT_HANDLERS_CHAINING_SPEEDUPS
 
 #define BX_SYNC_TIME_IF_SINGLE_PROCESSOR(allowed_delta) {                               \
@@ -49,8 +52,11 @@
 
 jmp_buf BX_CPU_C::jmp_buf_env;
 
-void BX_CPU_C::cpu_loop(void)
+bool resumed = false;
+
+int BX_CPU_C::cpu_loop(void)
 {
+  // jmp_buf_env.state = 0;
 #if BX_DEBUGGER
   BX_CPU_THIS_PTR break_point = 0;
   BX_CPU_THIS_PTR magic_break = 0;
@@ -62,10 +68,10 @@ void BX_CPU_C::cpu_loop(void)
     BX_CPU_THIS_PTR icount++;
     BX_SYNC_TIME_IF_SINGLE_PROCESSOR(0);
 #if BX_DEBUGGER || BX_GDBSTUB
-    if (dbg_instruction_epilog()) return;
+    if (dbg_instruction_epilog()) return 0;
 #endif
 #if BX_GDBSTUB
-    if (bx_dbg.gdbstub_enabled) return;
+    if (bx_dbg.gdbstub_enabled) return 0;
 #endif
   }
 
@@ -73,7 +79,7 @@ void BX_CPU_C::cpu_loop(void)
   // the debugger may request that control is returned to it so that
   // the situation may be examined.
 #if BX_DEBUGGER
-  if (bx_guard.interrupt_requested) return;
+  if (bx_guard.interrupt_requested) return 0;
 #endif
 
   // We get here either by a normal function call, or by a longjmp
@@ -85,12 +91,19 @@ void BX_CPU_C::cpu_loop(void)
 
   while (1) {
 
+    if (!resumed) {
+      if (SIM->get_param_bool(BXPN_WASM_INITDONE)->get()) {
+        resumed = true;
+        return CI_INIT_DONE;
+      }
+    }
+
     // check on events which occurred for previous instructions (traps)
     // and ones which are asynchronous to the CPU (hardware interrupts)
     if (BX_CPU_THIS_PTR async_event) {
       if (handleAsyncEvent()) {
         // If request to return to caller ASAP.
-        return;
+        return 0;
       }
     }
 
@@ -134,7 +147,7 @@ void BX_CPU_C::cpu_loop(void)
 
       // note instructions generating exceptions never reach this point
 #if BX_DEBUGGER || BX_GDBSTUB
-      if (dbg_instruction_epilog()) return;
+      if (dbg_instruction_epilog()) return 0;
 #endif
 
       if (BX_CPU_THIS_PTR async_event) break;
